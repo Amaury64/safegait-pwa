@@ -1,4 +1,4 @@
-// Enregistrement du Service Worker
+// 1. Gestion du Service Worker
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
 }
@@ -11,22 +11,32 @@ const btnRecord = document.getElementById('btnRecord');
 let isRecording = false;
 let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
 
-// 1. Initialisation de Pose avec complexité réduite pour la fluidité
+// 2. Initialisation Pose (Optimisée)
 const pose = new Pose({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
 });
 
 pose.setOptions({
-    modelComplexity: 0, // 0 = Lite (très fluide), 1 = Full. Testez avec 0 pour stopper le freeze.
+    modelComplexity: 0, 
     smoothLandmarks: true,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5
 });
 
+// 3. Boucle de rendu sécurisée
+async function detectionLoop() {
+    if (videoElement.paused || videoElement.ended) return;
+    
+    // On envoie l'image à l'IA et on ATTEND la réponse avant de continuer
+    await pose.send({image: videoElement});
+    
+    // On demande la prochaine image dès que possible (environ 30fps)
+    window.requestAnimationFrame(detectionLoop);
+}
+
 pose.onResults((results) => {
     if (!results.image) return;
 
-    // Ajustement de la résolution du canvas au flux réel
     canvasElement.width = results.image.width;
     canvasElement.height = results.image.height;
 
@@ -41,25 +51,39 @@ pose.onResults((results) => {
         if (isRecording) {
             const ts = Date.now();
             results.poseLandmarks.forEach((lm, i) => {
-                csvRows.push(`${ts},${i},${lm.x},${lm.y},${lm.z},${lm.visibility}`);
+                csvRows.push(`${ts},${i},${lm.x.toFixed(4)},${lm.y.toFixed(4)},${lm.z.toFixed(4)},${lm.visibility.toFixed(4)}`);
             });
         }
     }
     canvasCtx.restore();
 });
 
-// 2. Configuration Caméra 720p (Équilibre parfait Précision/Vitesse)
-const camera = new Camera(videoElement, {
-    onFrame: async () => {
-        await pose.send({image: videoElement});
-    },
-    facingMode: 'environment', // Caméra arrière forcée
-    width: 1280, 
-    height: 720
-});
+// 4. Lancement de la caméra avec les API standards du navigateur
+async function startCamera() {
+    const constraints = {
+        video: {
+            facingMode: 'environment', // Caméra arrière
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+        }
+    };
 
-camera.start();
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        videoElement.srcObject = stream;
+        videoElement.onloadedmetadata = () => {
+            videoElement.play();
+            detectionLoop(); // On lance la boucle une fois la vidéo prête
+        };
+    } catch (err) {
+        console.error("Erreur caméra : ", err);
+        alert("Impossible d'accéder à la caméra arrière.");
+    }
+}
 
+startCamera();
+
+// 5. Enregistrement CSV
 btnRecord.onclick = () => {
     isRecording = !isRecording;
     btnRecord.innerText = isRecording ? "ARRÊTER" : "DÉMARRER";
@@ -68,10 +92,12 @@ btnRecord.onclick = () => {
 };
 
 function downloadCSV() {
+    if (csvRows.length <= 1) return;
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `safegait_${Date.now()}.csv`;
     a.click();
+    window.URL.revokeObjectURL(url);
 }
