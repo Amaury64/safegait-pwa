@@ -1,91 +1,74 @@
-// Enregistrement du Service Worker
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
-}
-
 const videoElement = document.getElementById('input_video');
 const canvasElement = document.getElementById('output_canvas');
 const canvasCtx = canvasElement.getContext('2d');
 const btnRecord = document.getElementById('btnRecord');
 
+// CHANGEMENT VISUEL : Bouton Orange pour vérifier que la mise à jour est active
+btnRecord.style.background = "#FF9800"; 
+
 let isRecording = false;
 let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
-let frameCounter = 0; // Pour compter les images
+let frameCount = 0;
 
-// 1. Initialisation Pose (Mode Ultra-Léger)
 const pose = new Pose({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
 });
 
 pose.setOptions({
-    modelComplexity: 0, // Indispensable pour la fluidité
-    smoothLandmarks: true,
+    modelComplexity: 0, 
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5
 });
 
-// 2. Boucle de détection avec saut d'image
 async function detectionLoop() {
     if (videoElement.paused || videoElement.ended) return;
-
-    frameCounter++;
-
-    // On n'envoie à l'IA qu'une image sur deux pour soulager le processeur
-    if (frameCounter % 2 === 0) {
+    
+    frameCount++;
+    // ON ANALYSE SEULEMENT 1 IMAGE SUR 5 (Trés fluide pour le téléphone)
+    if (frameCount % 5 === 0) {
         await pose.send({image: videoElement});
     } else {
-        // Pour les images sautées, on dessine juste la vidéo sans IA pour la fluidité visuelle
-        drawVideoOnly();
+        // On dessine juste la vidéo pour garder l'écran fluide
+        canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
     }
-    
     window.requestAnimationFrame(detectionLoop);
 }
 
-function drawVideoOnly() {
-    canvasCtx.save();
-    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-    canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-    canvasCtx.restore();
-}
-
 pose.onResults((results) => {
-    if (!results.image) return;
-
     canvasElement.width = results.image.width;
     canvasElement.height = results.image.height;
-
     canvasCtx.save();
     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
     canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
     if (results.poseLandmarks) {
-        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
-        drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+        drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', radius: 2});
 
         if (isRecording) {
             const ts = Date.now();
             results.poseLandmarks.forEach((lm, i) => {
-                csvRows.push(`${ts},${i},${lm.x.toFixed(4)},${lm.y.toFixed(4)},${lm.z.toFixed(4)},${lm.visibility.toFixed(4)}`);
+                csvRows.push(`${ts},${i},${lm.x.toFixed(3)},${lm.y.toFixed(3)},${lm.z.toFixed(3)},${lm.visibility.toFixed(3)}`);
             });
         }
     }
     canvasCtx.restore();
 });
 
-// 3. Caméra Standardisée (640x480)
 async function startCamera() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment', width: 640, height: 480 }
-        });
-        videoElement.srcObject = stream;
-        videoElement.onloadedmetadata = () => {
-            videoElement.play();
-            detectionLoop();
-        };
-    } catch (err) {
-        alert("Erreur caméra : " + err);
-    }
+    const constraints = {
+        video: { 
+            facingMode: 'environment', 
+            width: { ideal: 320 }, // RÉSOLUTION TRÈS BASSE POUR LA STABILITÉ
+            height: { ideal: 240 } 
+        }
+    };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoElement.srcObject = stream;
+    videoElement.onloadedmetadata = () => {
+        videoElement.play();
+        detectionLoop();
+    };
 }
 
 startCamera();
@@ -93,15 +76,12 @@ startCamera();
 btnRecord.onclick = () => {
     isRecording = !isRecording;
     btnRecord.innerText = isRecording ? "ARRÊTER" : "DÉMARRER";
-    btnRecord.style.background = isRecording ? "red" : "#6200EE";
-    if (!isRecording) downloadCSV();
+    btnRecord.style.background = isRecording ? "red" : "#FF9800";
+    if (!isRecording) {
+        const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `safegait_${Date.now()}.csv`;
+        a.click();
+    }
 };
-
-function downloadCSV() {
-    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `safegait_${Date.now()}.csv`;
-    a.click();
-}
