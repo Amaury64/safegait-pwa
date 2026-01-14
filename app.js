@@ -1,4 +1,4 @@
-// 1. Enregistrement du Service Worker
+// Enregistrement du Service Worker
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
 }
@@ -11,57 +11,55 @@ const btnRecord = document.getElementById('btnRecord');
 let isRecording = false;
 let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
 
-// 2. Initialisation de l'IA Pose
+// 1. Initialisation de Pose avec complexité réduite pour la fluidité
 const pose = new Pose({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
 });
 
 pose.setOptions({
-    modelComplexity: 1,
+    modelComplexity: 0, // 0 = Lite (très fluide), 1 = Full. Testez avec 0 pour stopper le freeze.
     smoothLandmarks: true,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5
 });
 
 pose.onResults((results) => {
-    // Ajustement dynamique de la résolution pour la netteté
-    if (results.image) {
-        canvasElement.width = results.image.width;
-        canvasElement.height = results.image.height;
+    if (!results.image) return;
 
-        canvasCtx.save();
-        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+    // Ajustement de la résolution du canvas au flux réel
+    canvasElement.width = results.image.width;
+    canvasElement.height = results.image.height;
 
-        if (results.poseLandmarks) {
-            drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
-            drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2, radius: 4});
+    canvasCtx.save();
+    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-            if (isRecording) {
-                const ts = Date.now();
-                results.poseLandmarks.forEach((lm, i) => {
-                    csvRows.push(`${ts},${i},${lm.x},${lm.y},${lm.z},${lm.visibility}`);
-                });
-            }
+    if (results.poseLandmarks) {
+        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+        drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 1, radius: 3});
+
+        if (isRecording) {
+            const ts = Date.now();
+            results.poseLandmarks.forEach((lm, i) => {
+                csvRows.push(`${ts},${i},${lm.x},${lm.y},${lm.z},${lm.visibility}`);
+            });
         }
-        canvasCtx.restore();
     }
+    canvasCtx.restore();
 });
 
-// 3. Lancement de la Caméra ARRIÈRE (Correction forcée)
+// 2. Configuration Caméra 720p (Équilibre parfait Précision/Vitesse)
 const camera = new Camera(videoElement, {
     onFrame: async () => {
         await pose.send({image: videoElement});
     },
-    // On demande explicitement le capteur arrière
-    facingMode: 'environment',
+    facingMode: 'environment', // Caméra arrière forcée
     width: 1280, 
     height: 720
 });
 
 camera.start();
 
-// 4. Bouton d'enregistrement
 btnRecord.onclick = () => {
     isRecording = !isRecording;
     btnRecord.innerText = isRecording ? "ARRÊTER" : "DÉMARRER";
