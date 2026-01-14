@@ -27,9 +27,14 @@ pose.onResults((results) => {
     }
 });
 
+// Cherchez cette partie du code :
 const camera = new Camera(videoElement, {
-    onFrame: async () => { await pose.send({image: videoElement}); },
-    width: 640, height: 480
+    onFrame: async () => {
+        await pose.send({image: videoElement});
+    },
+    width: 1280,   // Vous pouvez augmenter la résolution pour plus de précision
+    height: 720,
+    facingMode: 'environment' // <--- AJOUTEZ CETTE LIGNE
 });
 camera.start();
 
