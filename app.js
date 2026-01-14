@@ -1,9 +1,6 @@
-
-// 1. Gestion du Service Worker (PWA)
+// 1. Service Worker pour le support hors-ligne (PWA)
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js')
-        .then(() => console.log("SafeGait: Service Worker prêt"))
-        .catch(err => console.error("Erreur SW:", err));
+    navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
 }
 
 const videoElement = document.getElementById('input_video');
@@ -11,69 +8,65 @@ const canvasElement = document.getElementById('output_canvas');
 const canvasCtx = canvasElement.getContext('2d');
 const btnRecord = document.getElementById('btnRecord');
 
-// État de l'application
+// INDICATEUR VISUEL : Le bouton doit être BLEU
+btnRecord.style.backgroundColor = "#2196F3"; 
+
 let isRecording = false;
 let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
 let isProcessing = false; 
 let lastLandmarks = null; 
 
-// CONFIGURATION DU LISSAGE (REACTIVITÉ)
-// 0.35 : Équilibre idéal pour supprimer la latence tout en gardant des articulations fluides.
-const SMOOTHING_FACTOR = 0.35; 
+// RÉGLAGE RÉACTIVITÉ : 0.7 = suit ton mouvement instantanément
+const SMOOTHING_FACTOR = 0.7; 
 
-// 2. Initialisation de MediaPipe Pose
+// 2. Initialisation de Pose - Mode "Lite" (vitesse maximale)
 const pose = new Pose({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
 });
 
 pose.setOptions({
-    modelComplexity: 1, // Haute précision adaptée au processeur du A55
+    modelComplexity: 0, // Mode ultra-rapide pour mobile
     smoothLandmarks: true,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5
 });
 
-// 3. BOUCLE DE RENDU (Affichage vidéo à 60 FPS)
+// 3. Boucle d'affichage vidéo (60 FPS constants)
 function renderLoop() {
     canvasCtx.save();
     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
     
-    // On dessine l'image brute de la caméra sans aucun retard
+    // On dessine le flux caméra en temps réel
     canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
     
-    // On dessine le squelette par-dessus (mis à jour dès que l'IA a fini)
+    // On dessine le squelette dès qu'un calcul est disponible
     if (lastLandmarks) {
         drawConnectors(canvasCtx, lastLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
         drawLandmarks(canvasCtx, lastLandmarks, {color: '#FF0000', radius: 3});
     }
     canvasCtx.restore();
 
-    // On lance le calcul de l'IA dès que possible sans bloquer l'affichage
+    // Si l'IA a fini le calcul précédent, on lui envoie l'image suivante
     if (!isProcessing) {
         processPose();
     }
-    
     requestAnimationFrame(renderLoop);
 }
 
-// 4. CALCUL DE L'IA (Haute Performance)
+// 4. Calcul de l'IA sans délai artificiel
 async function processPose() {
     isProcessing = true;
-    
-    // On envoie l'image actuelle à l'IA
     await pose.send({image: videoElement});
-    
-    // On libère le verrou immédiatement pour traiter l'image suivante
-    isProcessing = false; 
+    isProcessing = false; // Relance le calcul immédiatement
 }
 
-// 5. FILTRE TEMPOREL (Réduit la latence)
+// 5. Filtre de lissage léger pour coller au corps
 pose.onResults((results) => {
     if (results.poseLandmarks) {
         if (!lastLandmarks) {
             lastLandmarks = results.poseLandmarks;
         } else {
-            // Interpolation pour que le squelette "colle" au mouvement
+            // Interpolation rapide pour supprimer la traîne (lag)
             lastLandmarks = results.poseLandmarks.map((lm, i) => {
                 return {
                     x: lastLandmarks[i].x * (1 - SMOOTHING_FACTOR) + lm.x * SMOOTHING_FACTOR,
@@ -84,7 +77,6 @@ pose.onResults((results) => {
             });
         }
 
-        // Sauvegarde des coordonnées pour le CSV
         if (isRecording) {
             const ts = Date.now();
             lastLandmarks.forEach((lm, i) => {
@@ -94,55 +86,41 @@ pose.onResults((results) => {
     }
 });
 
-// 6. ACCÈS À LA CAMÉRA ARRIÈRE
+// 6. Lancement caméra (Résolution optimisée pour le A55)
 async function startCamera() {
-    const constraints = {
-        video: { 
-            facingMode: 'environment', // Force la caméra arrière
-            width: { ideal: 1280 }, 
-            height: { ideal: 720 } 
-        }
-    };
-
     try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment', width: 640, height: 480 }
+        });
         videoElement.srcObject = stream;
         videoElement.onloadedmetadata = () => {
             videoElement.play();
-            // Ajuste le canvas à la résolution réelle de capture
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
             renderLoop();
         };
     } catch (err) {
-        console.error("Accès caméra refusé :", err);
-        alert("Activez l'autorisation caméra pour utiliser SafeGait.");
+        alert("Erreur Caméra : " + err);
     }
 }
 
 startCamera();
 
-// 7. BOUTON D'ENREGISTREMENT ET GÉNÉRATION CSV
+// 7. Bouton et téléchargement CSV
 btnRecord.onclick = () => {
     isRecording = !isRecording;
-    btnRecord.innerText = isRecording ? "ARRÊTER L'ACQUISITION" : "DÉMARRER L'ACQUISITION";
-    btnRecord.style.backgroundColor = isRecording ? "red" : "#E91E63";
+    btnRecord.innerText = isRecording ? "ARRÊTER" : "DÉMARRER";
+    btnRecord.style.backgroundColor = isRecording ? "red" : "#2196F3";
     
     if (!isRecording) {
-        downloadCSV();
+        const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `safegait_${Date.now()}.csv`;
+        a.click();
+        window.URL.revokeObjectURL(url);
     } else {
-        // Reset des données pour une nouvelle session
         csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
     }
 };
-
-function downloadCSV() {
-    if (csvRows.length <= 1) return;
-    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `safegait_session_${Date.now()}.csv`;
-    a.click();
-    window.URL.revokeObjectURL(url); // Libère la mémoire vive
-}
