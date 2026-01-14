@@ -1,8 +1,6 @@
-// 1. Enregistrement du Service Worker pour le mode PWA hors-ligne
+// 1. Enregistrement du Service Worker
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js')
-        .then(() => console.log("Service Worker SafeGait actif"))
-        .catch(err => console.log("Erreur SW:", err));
+    navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
 }
 
 const videoElement = document.getElementById('input_video');
@@ -13,44 +11,32 @@ const btnRecord = document.getElementById('btnRecord');
 let isRecording = false;
 let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
 
-// 2. Initialisation de MediaPipe Pose
+// 2. Initialisation de l'IA Pose
 const pose = new Pose({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
 });
 
-// Configuration pour un bon compromis entre précision et fluidité
 pose.setOptions({
-    modelComplexity: 1, // 1 pour la précision standard, 2 pour la haute précision (plus lent)
+    modelComplexity: 1,
     smoothLandmarks: true,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5
 });
 
-// 3. Traitement et Dessin du Squelette
 pose.onResults((results) => {
-    // Ajustement de la résolution du canvas pour correspondre à la caméra réelle
+    // Ajustement dynamique de la résolution pour la netteté
     if (results.image) {
-        if (canvasElement.width !== results.image.width) {
-            canvasElement.width = results.image.width;
-            canvasElement.height = results.image.height;
-        }
+        canvasElement.width = results.image.width;
+        canvasElement.height = results.image.height;
 
         canvasCtx.save();
         canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-        
-        // Affichage du flux vidéo HD
         canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-        // Dessin du squelette par-dessus
         if (results.poseLandmarks) {
-            // Dessin des lignes (vert)
-            drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS,
-                {color: '#00FF00', lineWidth: 4});
-            // Dessin des articulations (rouge)
-            drawLandmarks(canvasCtx, results.poseLandmarks,
-                {color: '#FF0000', lineWidth: 2, radius: 4});
+            drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+            drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2, radius: 4});
 
-            // Enregistrement des données si l'acquisition est lancée
             if (isRecording) {
                 const ts = Date.now();
                 results.poseLandmarks.forEach((lm, i) => {
@@ -62,45 +48,32 @@ pose.onResults((results) => {
     }
 });
 
-// 4. Configuration de la Caméra (Forçage HD et Caméra Arrière)
+// 3. Lancement de la Caméra ARRIÈRE (Correction forcée)
 const camera = new Camera(videoElement, {
     onFrame: async () => {
         await pose.send({image: videoElement});
     },
-    // Forçage de la résolution Full HD et du capteur arrière
-    width: 1920,
-    height: 1080,
-    facingMode: 'environment' 
+    // On demande explicitement le capteur arrière
+    facingMode: 'environment',
+    width: 1280, 
+    height: 720
 });
 
 camera.start();
 
-// 5. Gestion du bouton d'enregistrement
+// 4. Bouton d'enregistrement
 btnRecord.onclick = () => {
-    if (!isRecording) {
-        // Démarrage
-        isRecording = true;
-        csvRows = ["timestamp,landmark_id,x,y,z,visibility"]; // Reset
-        btnRecord.innerText = "ARRÊTER ET TÉLÉCHARGER";
-        btnRecord.style.background = "red";
-    } else {
-        // Arrêt
-        isRecording = false;
-        btnRecord.innerText = "DÉMARRER L'ACQUISITION";
-        btnRecord.style.background = "#6200EE";
-        downloadCSV();
-    }
+    isRecording = !isRecording;
+    btnRecord.innerText = isRecording ? "ARRÊTER" : "DÉMARRER";
+    btnRecord.style.background = isRecording ? "red" : "#6200EE";
+    if (!isRecording) downloadCSV();
 };
 
-// Fonction de génération du fichier CSV
 function downloadCSV() {
-    if (csvRows.length <= 1) return;
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     a.href = url;
-    a.download = `safegait_session_${dateStr}.csv`;
+    a.download = `safegait_${Date.now()}.csv`;
     a.click();
-    window.URL.revokeObjectURL(url);
 }
