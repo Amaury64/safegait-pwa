@@ -6,18 +6,20 @@
     <link rel="manifest" href="manifest.json">
     <title>SafeGait PWA</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    
     <style>
-        body { font-family: sans-serif; text-align: center; margin: 0; }
-        canvas { width: 100%; height: auto; background: #000; }
-        button { padding: 15px 30px; font-size: 18px; cursor: pointer; background: #6200EE; color: white; border: none; border-radius: 8px; margin-top: 20px; }
+        body { margin: 0; background: #000; color: white; text-align: center; font-family: sans-serif; overflow: hidden; }
+        #output_canvas { width: 100vw; height: 100vh; object-fit: contain; }
+        #btnRecord { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); 
+                     padding: 15px 30px; font-size: 18px; border-radius: 50px; border: none; z-index: 10; }
+        video { display: none; }
     </style>
 </head>
 <body>
-    <h1>SafeGait Analyzer</h1>
     <canvas id="output_canvas"></canvas>
     <button id="btnRecord">DÉMARRER L'ACQUISITION</button>
-    <video id="input_video" style="display:none"></video>
+    <video id="input_video" playsinline></video>
     <script src="app.js"></script>
 </body>
 </html>
