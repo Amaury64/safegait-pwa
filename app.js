@@ -1,4 +1,4 @@
-// 1. Gestion du Service Worker
+// Enregistrement du Service Worker
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
 }
@@ -10,28 +10,42 @@ const btnRecord = document.getElementById('btnRecord');
 
 let isRecording = false;
 let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
+let frameCounter = 0; // Pour compter les images
 
-// 2. Initialisation Pose (Optimisée)
+// 1. Initialisation Pose (Mode Ultra-Léger)
 const pose = new Pose({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
 });
 
 pose.setOptions({
-    modelComplexity: 0, 
+    modelComplexity: 0, // Indispensable pour la fluidité
     smoothLandmarks: true,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5
 });
 
-// 3. Boucle de rendu sécurisée
+// 2. Boucle de détection avec saut d'image
 async function detectionLoop() {
     if (videoElement.paused || videoElement.ended) return;
+
+    frameCounter++;
+
+    // On n'envoie à l'IA qu'une image sur deux pour soulager le processeur
+    if (frameCounter % 2 === 0) {
+        await pose.send({image: videoElement});
+    } else {
+        // Pour les images sautées, on dessine juste la vidéo sans IA pour la fluidité visuelle
+        drawVideoOnly();
+    }
     
-    // On envoie l'image à l'IA et on ATTEND la réponse avant de continuer
-    await pose.send({image: videoElement});
-    
-    // On demande la prochaine image dès que possible (environ 30fps)
     window.requestAnimationFrame(detectionLoop);
+}
+
+function drawVideoOnly() {
+    canvasCtx.save();
+    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+    canvasCtx.restore();
 }
 
 pose.onResults((results) => {
@@ -58,32 +72,24 @@ pose.onResults((results) => {
     canvasCtx.restore();
 });
 
-// 4. Lancement de la caméra avec les API standards du navigateur
+// 3. Caméra Standardisée (640x480)
 async function startCamera() {
-    const constraints = {
-        video: {
-            facingMode: 'environment', // Caméra arrière
-            width: { ideal: 640 },
-            height: { ideal: 480 }
-        }
-    };
-
     try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment', width: 640, height: 480 }
+        });
         videoElement.srcObject = stream;
         videoElement.onloadedmetadata = () => {
             videoElement.play();
-            detectionLoop(); // On lance la boucle une fois la vidéo prête
+            detectionLoop();
         };
     } catch (err) {
-        console.error("Erreur caméra : ", err);
-        alert("Impossible d'accéder à la caméra arrière.");
+        alert("Erreur caméra : " + err);
     }
 }
 
 startCamera();
 
-// 5. Enregistrement CSV
 btnRecord.onclick = () => {
     isRecording = !isRecording;
     btnRecord.innerText = isRecording ? "ARRÊTER" : "DÉMARRER";
@@ -92,12 +98,10 @@ btnRecord.onclick = () => {
 };
 
 function downloadCSV() {
-    if (csvRows.length <= 1) return;
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `safegait_${Date.now()}.csv`;
     a.click();
-    window.URL.revokeObjectURL(url);
 }
