@@ -1,6 +1,9 @@
-// 1. Enregistrement du Service Worker (PWA)
+
+// 1. Gestion du Service Worker (PWA)
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(err => console.error("Erreur SW:", err));
+    navigator.serviceWorker.register('./sw.js')
+        .then(() => console.log("SafeGait: Service Worker prêt"))
+        .catch(err => console.error("Erreur SW:", err));
 }
 
 const videoElement = document.getElementById('input_video');
@@ -14,10 +17,9 @@ let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
 let isProcessing = false; 
 let lastLandmarks = null; 
 
-// CONFIGURATION DE LA STABILITÉ
-// 0.1 = Squelette très stable (gomme les sauts). 
-// Augmente à 0.2 si tu trouves que le squelette est trop lent à te suivre.
-const SMOOTHING_FACTOR = 0.1; 
+// CONFIGURATION DU LISSAGE (REACTIVITÉ)
+// 0.35 : Équilibre idéal pour supprimer la latence tout en gardant des articulations fluides.
+const SMOOTHING_FACTOR = 0.35; 
 
 // 2. Initialisation de MediaPipe Pose
 const pose = new Pose({
@@ -25,28 +27,28 @@ const pose = new Pose({
 });
 
 pose.setOptions({
-    modelComplexity: 1, // Équilibre précision/vitesse pour Samsung A55
+    modelComplexity: 1, // Haute précision adaptée au processeur du A55
     smoothLandmarks: true,
-    minDetectionConfidence: 0.7, // On ignore les détections incertaines pour éviter les sauts
-    minTrackingConfidence: 0.7
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
 });
 
-// 3. BOUCLE DE RENDU VISUEL (Toujours fluide à 60 FPS)
+// 3. BOUCLE DE RENDU (Affichage vidéo à 60 FPS)
 function renderLoop() {
     canvasCtx.save();
     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
     
-    // Dessin du flux vidéo en arrière-plan
+    // On dessine l'image brute de la caméra sans aucun retard
     canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
     
-    // Dessin du squelette lissé par-dessus
+    // On dessine le squelette par-dessus (mis à jour dès que l'IA a fini)
     if (lastLandmarks) {
         drawConnectors(canvasCtx, lastLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
         drawLandmarks(canvasCtx, lastLandmarks, {color: '#FF0000', radius: 3});
     }
     canvasCtx.restore();
 
-    // Si l'IA est prête, on lance un nouveau calcul
+    // On lance le calcul de l'IA dès que possible sans bloquer l'affichage
     if (!isProcessing) {
         processPose();
     }
@@ -54,21 +56,24 @@ function renderLoop() {
     requestAnimationFrame(renderLoop);
 }
 
-// 4. CALCUL DE L'IA (Séparé pour éviter de figer l'image)
+// 4. CALCUL DE L'IA (Haute Performance)
 async function processPose() {
     isProcessing = true;
+    
+    // On envoie l'image actuelle à l'IA
     await pose.send({image: videoElement});
-    // Petite pause de sécurité pour laisser le processeur respirer
-    setTimeout(() => { isProcessing = false; }, 30); 
+    
+    // On libère le verrou immédiatement pour traiter l'image suivante
+    isProcessing = false; 
 }
 
-// 5. FILTRE DE LISSAGE DES RÉSULTATS
+// 5. FILTRE TEMPOREL (Réduit la latence)
 pose.onResults((results) => {
     if (results.poseLandmarks) {
         if (!lastLandmarks) {
             lastLandmarks = results.poseLandmarks;
         } else {
-            // On applique le filtre passe-bas pour supprimer les tremblements
+            // Interpolation pour que le squelette "colle" au mouvement
             lastLandmarks = results.poseLandmarks.map((lm, i) => {
                 return {
                     x: lastLandmarks[i].x * (1 - SMOOTHING_FACTOR) + lm.x * SMOOTHING_FACTOR,
@@ -79,7 +84,7 @@ pose.onResults((results) => {
             });
         }
 
-        // Enregistrement des données CSV
+        // Sauvegarde des coordonnées pour le CSV
         if (isRecording) {
             const ts = Date.now();
             lastLandmarks.forEach((lm, i) => {
@@ -89,11 +94,11 @@ pose.onResults((results) => {
     }
 });
 
-// 6. DÉMARRAGE DE LA CAMÉRA ARRIÈRE
+// 6. ACCÈS À LA CAMÉRA ARRIÈRE
 async function startCamera() {
     const constraints = {
         video: { 
-            facingMode: 'environment', 
+            facingMode: 'environment', // Force la caméra arrière
             width: { ideal: 1280 }, 
             height: { ideal: 720 } 
         }
@@ -104,29 +109,30 @@ async function startCamera() {
         videoElement.srcObject = stream;
         videoElement.onloadedmetadata = () => {
             videoElement.play();
-            // On ajuste le canvas à la taille réelle de la vidéo capturée
+            // Ajuste le canvas à la résolution réelle de capture
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
             renderLoop();
         };
     } catch (err) {
-        console.error("Erreur Caméra:", err);
-        alert("Impossible d'activer la caméra arrière. Vérifiez les autorisations.");
+        console.error("Accès caméra refusé :", err);
+        alert("Activez l'autorisation caméra pour utiliser SafeGait.");
     }
 }
 
 startCamera();
 
-// 7. GESTION DE L'ENREGISTREMENT CSV
+// 7. BOUTON D'ENREGISTREMENT ET GÉNÉRATION CSV
 btnRecord.onclick = () => {
     isRecording = !isRecording;
     btnRecord.innerText = isRecording ? "ARRÊTER L'ACQUISITION" : "DÉMARRER L'ACQUISITION";
-    btnRecord.style.background = isRecording ? "red" : "#FF9800";
+    btnRecord.style.backgroundColor = isRecording ? "red" : "#E91E63";
     
     if (!isRecording) {
         downloadCSV();
     } else {
-        csvRows = ["timestamp,landmark_id,x,y,z,visibility"]; // Reset au démarrage
+        // Reset des données pour une nouvelle session
+        csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
     }
 };
 
@@ -136,7 +142,7 @@ function downloadCSV() {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `safegait_data_${Date.now()}.csv`;
+    a.download = `safegait_session_${Date.now()}.csv`;
     a.click();
-    window.URL.revokeObjectURL(url);
+    window.URL.revokeObjectURL(url); // Libère la mémoire vive
 }
