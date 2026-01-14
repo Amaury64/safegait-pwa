@@ -1,4 +1,4 @@
-// Enregistrement du Service Worker
+// 1. Service Worker pour le mode PWA
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
 }
@@ -8,87 +8,117 @@ const canvasElement = document.getElementById('output_canvas');
 const canvasCtx = canvasElement.getContext('2d');
 const btnRecord = document.getElementById('btnRecord');
 
-btnRecord.style.background = "#FF9800"; // Toujours orange pour vérification
-
 let isRecording = false;
 let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
-let isProcessing = false; // Verrou pour empêcher la saturation
+let isProcessing = false;
+let lastLandmarks = null; 
+
+// RÉGLAGE DE LA FLUIDITÉ : 
+// Plus ce chiffre est bas, plus le squelette est stable (moins de sauts)
+const SMOOTHING_FACTOR = 0.2; 
 
 const pose = new Pose({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
 });
 
 pose.setOptions({
-    modelComplexity: 0,
+    modelComplexity: 1, // Équilibre parfait pour le Samsung A55
     smoothLandmarks: true,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5
 });
 
-// BOUCLE DE RENDU : Sépare la vidéo du calcul pour éviter le freeze
+// 2. BOUCLE DE RENDU (Sépare la vidéo du calcul IA)
 function renderLoop() {
-    // 1. On dessine la vidéo en continu (60fps) pour que l'image ne se bloque JAMAIS
+    // Dessine la vidéo en fond (toujours fluide à 60fps)
+    canvasCtx.save();
+    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
     canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
     
-    // 2. Si l'IA n'est pas déjà en train de calculer, on lui envoie une image
+    // Si nous avons des points calculés, on les dessine par-dessus
+    if (lastLandmarks) {
+        drawConnectors(canvasCtx, lastLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+        drawLandmarks(canvasCtx, lastLandmarks, {color: '#FF0000', radius: 3});
+    }
+    canvasCtx.restore();
+
+    // Si l'IA est libre, on lui demande un nouveau calcul
     if (!isProcessing) {
         processPose();
     }
-    
     requestAnimationFrame(renderLoop);
 }
 
 async function processPose() {
     isProcessing = true;
-    
-    // On envoie l'image à l'IA
     await pose.send({image: videoElement});
-    
-    // PAUSE OBLIGATOIRE de 100ms pour laisser souffler le Samsung A55
-    setTimeout(() => {
-        isProcessing = false;
-    }, 100); 
+    // On attend un tout petit peu (30ms) pour ne pas saturer le processeur
+    setTimeout(() => { isProcessing = false; }, 30); 
 }
 
+// 3. TRAITEMENT DES RÉSULTATS AVEC FILTRE PASSE-BAS
 pose.onResults((results) => {
-    // On dessine le squelette par-dessus l'image déjà présente
     if (results.poseLandmarks) {
-        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
-        drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', radius: 2});
+        if (!lastLandmarks) {
+            lastLandmarks = results.poseLandmarks;
+        } else {
+            // On lisse chaque point en fonction de sa position précédente
+            lastLandmarks = results.poseLandmarks.map((lm, i) => {
+                return {
+                    x: lastLandmarks[i].x * (1 - SMOOTHING_FACTOR) + lm.x * SMOOTHING_FACTOR,
+                    y: lastLandmarks[i].y * (1 - SMOOTHING_FACTOR) + lm.y * SMOOTHING_FACTOR,
+                    z: lastLandmarks[i].z * (1 - SMOOTHING_FACTOR) + lm.z * SMOOTHING_FACTOR,
+                    visibility: lm.visibility
+                };
+            });
+        }
 
         if (isRecording) {
             const ts = Date.now();
-            results.poseLandmarks.forEach((lm, i) => {
-                csvRows.push(`${ts},${i},${lm.x.toFixed(3)},${lm.y.toFixed(3)},${lm.z.toFixed(3)},${lm.visibility.toFixed(3)}`);
+            lastLandmarks.forEach((lm, i) => {
+                csvRows.push(`${ts},${i},${lm.x.toFixed(4)},${lm.y.toFixed(4)},${lm.z.toFixed(4)}`);
             });
         }
     }
 });
 
+// 4. LANCEMENT CAMÉRA ET INTERFACE
 async function startCamera() {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const constraints = {
         video: { facingMode: 'environment', width: 640, height: 480 }
-    });
-    videoElement.srcObject = stream;
-    videoElement.onloadedmetadata = () => {
-        videoElement.play();
-        canvasElement.width = 640;
-        canvasElement.height = 480;
-        renderLoop();
     };
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        videoElement.srcObject = stream;
+        videoElement.onloadedmetadata = () => {
+            videoElement.play();
+            // On aligne la taille du canvas sur la vidéo réelle
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            renderLoop();
+        };
+    } catch (err) {
+        alert("Erreur Caméra : " + err);
+    }
 }
 
 startCamera();
 
 btnRecord.onclick = () => {
     isRecording = !isRecording;
-    btnRecord.innerText = isRecording ? "ARRÊTER" : "DÉMARRER";
+    btnRecord.innerText = isRecording ? "ARRÊTER L'ENREGISTREMENT" : "DÉMARRER L'ACQUISITION";
     btnRecord.style.background = isRecording ? "red" : "#FF9800";
-    if (!isRecording) {
-        const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `safegait_${Date.now()}.csv`;
-        a.click();
-    }
+    if (!isRecording) downloadCSV();
 };
+
+function downloadCSV() {
+    if (csvRows.length <= 1) return;
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `safegait_${Date.now()}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url); // Nettoyage mémoire
+}
