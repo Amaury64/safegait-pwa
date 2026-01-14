@@ -1,46 +1,57 @@
+// Enregistrement du Service Worker
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
+}
+
 const videoElement = document.getElementById('input_video');
 const canvasElement = document.getElementById('output_canvas');
 const canvasCtx = canvasElement.getContext('2d');
 const btnRecord = document.getElementById('btnRecord');
 
-// CHANGEMENT VISUEL : Bouton Orange pour vérifier que la mise à jour est active
-btnRecord.style.background = "#FF9800"; 
+btnRecord.style.background = "#FF9800"; // Toujours orange pour vérification
 
 let isRecording = false;
 let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
-let frameCount = 0;
+let isProcessing = false; // Verrou pour empêcher la saturation
 
 const pose = new Pose({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
 });
 
 pose.setOptions({
-    modelComplexity: 0, 
+    modelComplexity: 0,
+    smoothLandmarks: true,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5
 });
 
-async function detectionLoop() {
-    if (videoElement.paused || videoElement.ended) return;
+// BOUCLE DE RENDU : Sépare la vidéo du calcul pour éviter le freeze
+function renderLoop() {
+    // 1. On dessine la vidéo en continu (60fps) pour que l'image ne se bloque JAMAIS
+    canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
     
-    frameCount++;
-    // ON ANALYSE SEULEMENT 1 IMAGE SUR 5 (Trés fluide pour le téléphone)
-    if (frameCount % 5 === 0) {
-        await pose.send({image: videoElement});
-    } else {
-        // On dessine juste la vidéo pour garder l'écran fluide
-        canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+    // 2. Si l'IA n'est pas déjà en train de calculer, on lui envoie une image
+    if (!isProcessing) {
+        processPose();
     }
-    window.requestAnimationFrame(detectionLoop);
+    
+    requestAnimationFrame(renderLoop);
+}
+
+async function processPose() {
+    isProcessing = true;
+    
+    // On envoie l'image à l'IA
+    await pose.send({image: videoElement});
+    
+    // PAUSE OBLIGATOIRE de 100ms pour laisser souffler le Samsung A55
+    setTimeout(() => {
+        isProcessing = false;
+    }, 100); 
 }
 
 pose.onResults((results) => {
-    canvasElement.width = results.image.width;
-    canvasElement.height = results.image.height;
-    canvasCtx.save();
-    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-    canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
+    // On dessine le squelette par-dessus l'image déjà présente
     if (results.poseLandmarks) {
         drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
         drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', radius: 2});
@@ -52,22 +63,18 @@ pose.onResults((results) => {
             });
         }
     }
-    canvasCtx.restore();
 });
 
 async function startCamera() {
-    const constraints = {
-        video: { 
-            facingMode: 'environment', 
-            width: { ideal: 320 }, // RÉSOLUTION TRÈS BASSE POUR LA STABILITÉ
-            height: { ideal: 240 } 
-        }
-    };
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: 640, height: 480 }
+    });
     videoElement.srcObject = stream;
     videoElement.onloadedmetadata = () => {
         videoElement.play();
-        detectionLoop();
+        canvasElement.width = 640;
+        canvasElement.height = 480;
+        renderLoop();
     };
 }
 
