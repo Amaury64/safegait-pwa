@@ -1,6 +1,6 @@
-// 1. Service Worker pour le mode PWA
+// 1. Enregistrement du Service Worker (PWA)
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
+    navigator.serviceWorker.register('./sw.js').catch(err => console.error("Erreur SW:", err));
 }
 
 const videoElement = document.getElementById('input_video');
@@ -8,61 +8,67 @@ const canvasElement = document.getElementById('output_canvas');
 const canvasCtx = canvasElement.getContext('2d');
 const btnRecord = document.getElementById('btnRecord');
 
+// État de l'application
 let isRecording = false;
 let csvRows = ["timestamp,landmark_id,x,y,z,visibility"];
-let isProcessing = false;
+let isProcessing = false; 
 let lastLandmarks = null; 
 
-// RÉGLAGE DE LA FLUIDITÉ : 
-// Plus ce chiffre est bas, plus le squelette est stable (moins de sauts)
-const SMOOTHING_FACTOR = 0.2; 
+// CONFIGURATION DE LA STABILITÉ
+// 0.1 = Squelette très stable (gomme les sauts). 
+// Augmente à 0.2 si tu trouves que le squelette est trop lent à te suivre.
+const SMOOTHING_FACTOR = 0.1; 
 
+// 2. Initialisation de MediaPipe Pose
 const pose = new Pose({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
 });
 
 pose.setOptions({
-    modelComplexity: 1, // Équilibre parfait pour le Samsung A55
+    modelComplexity: 1, // Équilibre précision/vitesse pour Samsung A55
     smoothLandmarks: true,
-    minDetectionConfidence: 0.5,
-    minTrackingConfidence: 0.5
+    minDetectionConfidence: 0.7, // On ignore les détections incertaines pour éviter les sauts
+    minTrackingConfidence: 0.7
 });
 
-// 2. BOUCLE DE RENDU (Sépare la vidéo du calcul IA)
+// 3. BOUCLE DE RENDU VISUEL (Toujours fluide à 60 FPS)
 function renderLoop() {
-    // Dessine la vidéo en fond (toujours fluide à 60fps)
     canvasCtx.save();
     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    
+    // Dessin du flux vidéo en arrière-plan
     canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
     
-    // Si nous avons des points calculés, on les dessine par-dessus
+    // Dessin du squelette lissé par-dessus
     if (lastLandmarks) {
         drawConnectors(canvasCtx, lastLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
         drawLandmarks(canvasCtx, lastLandmarks, {color: '#FF0000', radius: 3});
     }
     canvasCtx.restore();
 
-    // Si l'IA est libre, on lui demande un nouveau calcul
+    // Si l'IA est prête, on lance un nouveau calcul
     if (!isProcessing) {
         processPose();
     }
+    
     requestAnimationFrame(renderLoop);
 }
 
+// 4. CALCUL DE L'IA (Séparé pour éviter de figer l'image)
 async function processPose() {
     isProcessing = true;
     await pose.send({image: videoElement});
-    // On attend un tout petit peu (30ms) pour ne pas saturer le processeur
+    // Petite pause de sécurité pour laisser le processeur respirer
     setTimeout(() => { isProcessing = false; }, 30); 
 }
 
-// 3. TRAITEMENT DES RÉSULTATS AVEC FILTRE PASSE-BAS
+// 5. FILTRE DE LISSAGE DES RÉSULTATS
 pose.onResults((results) => {
     if (results.poseLandmarks) {
         if (!lastLandmarks) {
             lastLandmarks = results.poseLandmarks;
         } else {
-            // On lisse chaque point en fonction de sa position précédente
+            // On applique le filtre passe-bas pour supprimer les tremblements
             lastLandmarks = results.poseLandmarks.map((lm, i) => {
                 return {
                     x: lastLandmarks[i].x * (1 - SMOOTHING_FACTOR) + lm.x * SMOOTHING_FACTOR,
@@ -73,6 +79,7 @@ pose.onResults((results) => {
             });
         }
 
+        // Enregistrement des données CSV
         if (isRecording) {
             const ts = Date.now();
             lastLandmarks.forEach((lm, i) => {
@@ -82,10 +89,14 @@ pose.onResults((results) => {
     }
 });
 
-// 4. LANCEMENT CAMÉRA ET INTERFACE
+// 6. DÉMARRAGE DE LA CAMÉRA ARRIÈRE
 async function startCamera() {
     const constraints = {
-        video: { facingMode: 'environment', width: 640, height: 480 }
+        video: { 
+            facingMode: 'environment', 
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 } 
+        }
     };
 
     try {
@@ -93,23 +104,30 @@ async function startCamera() {
         videoElement.srcObject = stream;
         videoElement.onloadedmetadata = () => {
             videoElement.play();
-            // On aligne la taille du canvas sur la vidéo réelle
+            // On ajuste le canvas à la taille réelle de la vidéo capturée
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
             renderLoop();
         };
     } catch (err) {
-        alert("Erreur Caméra : " + err);
+        console.error("Erreur Caméra:", err);
+        alert("Impossible d'activer la caméra arrière. Vérifiez les autorisations.");
     }
 }
 
 startCamera();
 
+// 7. GESTION DE L'ENREGISTREMENT CSV
 btnRecord.onclick = () => {
     isRecording = !isRecording;
-    btnRecord.innerText = isRecording ? "ARRÊTER L'ENREGISTREMENT" : "DÉMARRER L'ACQUISITION";
+    btnRecord.innerText = isRecording ? "ARRÊTER L'ACQUISITION" : "DÉMARRER L'ACQUISITION";
     btnRecord.style.background = isRecording ? "red" : "#FF9800";
-    if (!isRecording) downloadCSV();
+    
+    if (!isRecording) {
+        downloadCSV();
+    } else {
+        csvRows = ["timestamp,landmark_id,x,y,z,visibility"]; // Reset au démarrage
+    }
 };
 
 function downloadCSV() {
@@ -118,7 +136,7 @@ function downloadCSV() {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `safegait_${Date.now()}.csv`;
+    a.download = `safegait_data_${Date.now()}.csv`;
     a.click();
-    window.URL.revokeObjectURL(url); // Nettoyage mémoire
+    window.URL.revokeObjectURL(url);
 }
